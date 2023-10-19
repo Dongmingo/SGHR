@@ -1,0 +1,8 @@
+pre/*
+data/*
+.vscode/*
+debug/*
+*.png
+*.pyc
+utils/knn_search/*
+*.ply

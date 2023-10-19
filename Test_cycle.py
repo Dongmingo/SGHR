@@ -8,6 +8,11 @@ from dataops.dataset import get_dataset_name
 from TransSync.p2p_reg import name2estimator
 from TransSync.Laplacian_TS import pair2globalT_cycle
 
+import open3d
+import matplotlib.pyplot as plt
+
+import os
+os.environ["DISPLAY"] = ":1"
 
 class cycle_tester():
     def __init__(self, cfg):
@@ -28,6 +33,14 @@ class cycle_tester():
         make_non_exists_dir(f'{self.prepose_dir}/{dataset.name}')
         poses = poses.reshape(-1,4)
         np.savetxt(f'{self.prepose_dir}/{dataset.name}/pose.txt', poses, delimiter=',')
+        
+    def savepcds(self, dataset, pcds):
+        make_non_exists_dir(f'{self.prepose_dir}/{dataset.name}')
+        open3d.io.write_point_cloud(f'{self.prepose_dir}/{dataset.name}/recon.ply', pcds)
+        
+    def loadpose(self, dataset):
+        poses = np.loadtxt(f'{self.prepose_dir}/{dataset.name}/pose.txt',delimiter=',')
+        return poses.reshape((-1,4,4))
     
     def savelog(self, dataset, trans):
         make_non_exists_dir(f'{self.prelog_dir}/{dataset.name}')
@@ -181,6 +194,30 @@ class cycle_tester():
         make_non_exists_dir(savedir)
         np.save(f'{savedir}/ratio.npy', gt_overlap)
     
+    def get_colors(self, N, colormap='viridis'):
+        cmap = plt.colormaps.get_cmap(colormap)
+        colors = cmap(np.linspace(0, 1, N))[:, :3]
+        return colors
+    
+    def vis_onedatasets(self, datasets):
+        for name, dataset in tqdm(self.datasets.items()):
+            if type(dataset) is str: continue
+            Tpcs = self.loadpose(dataset)
+            pcds = []
+            N = len(Tpcs)
+            save_pcd = open3d.geometry.PointCloud()
+            colors = self.get_colors(N, 'viridis')
+            for i, Ti in enumerate(Tpcs):
+                pcd = dataset.get_pc_o3d(i)
+                d_pcd = pcd.voxel_down_sample(0.025)
+                abs_Ti = Ti
+                d_pcd.transform(abs_Ti)
+                d_pcd.paint_uniform_color(colors[i])
+                pcds.append(d_pcd)
+                save_pcd += d_pcd
+            # open3d.visualization.draw_geometries(pcds)
+            self.savepcds(dataset, save_pcd)
+            
     def run_get_gt_onedatasets(self, datasets):
         for name, dataset in tqdm(self.datasets.items()):
             if type(dataset) is str: continue
@@ -196,6 +233,7 @@ class cycle_tester():
         setname = datasets['wholesetname']
         for name, dataset in tqdm(self.datasets.items()):
             if type(dataset) is str: continue
+            if name == 'scene0197_01': continue
             # graph construct and calculate
             N_pair, Tpcs, ir = self.onegraph(dataset)
             IRs.append(ir)
@@ -244,6 +282,9 @@ class cycle_tester():
             print(f'{datasets[name].name} rr: {rr_one}')
         print(f'RR of {setname} - Avg: ', np.mean(np.array(RR)))
     
+    def visualize_recon(self):
+        self.vis_onedatasets(self.datasets) 
+    
     def run_get_gt(self):
         self.run_get_gt_onedatasets(self.datasets) 
         
@@ -259,6 +300,7 @@ if __name__ == '__main__':
     
     # Customized parameters
     parser.add_argument('--calculate_coarse_overlap', action='store_true')
+    parser.add_argument('--visualize_reconstruction', action='store_true')
     parser.add_argument('--use_full_graph', action='store_true')
     parser.add_argument('--use_gt_overlap_graph', action='store_true')
     parser.add_argument('--use_gt_coarse_corres', action='store_true')
@@ -284,5 +326,7 @@ if __name__ == '__main__':
     tester = cycle_tester(args)
     if args.calculate_coarse_overlap:
         tester.run_get_gt()
+    elif args.visualize_reconstruction:
+        tester.visualize_recon()
     else:
         tester.run()
