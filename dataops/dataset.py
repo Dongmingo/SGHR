@@ -3,9 +3,24 @@ import abc
 import torch
 import numpy as np
 import open3d as o3d
+import MinkowskiEngine as ME
 from utils.utils import (
     random_rotation_matrix, 
     read_pickle)
+
+def array2vector(array, step):
+    array, step = array.long().cpu(), step.long().cpu()
+    vector = sum([array[:,i]*(step**i) for i in range(array.shape[-1])])
+    return vector
+
+def sort_me_sparse_tensor(sparse_tensor):
+    indices_sort = np.argsort(array2vector(sparse_tensor.C.cpu(),
+    sparse_tensor.C.cpu().max()+1))
+    sparse_tensor_sort = ME.SparseTensor(features=sparse_tensor.F[indices_sort],
+    coordinates=sparse_tensor.C[indices_sort],
+    tensor_stride=sparse_tensor.tensor_stride[0],
+    device=sparse_tensor.device)
+    return sparse_tensor_sort
 
 def make_non_exists_dir(fn):
     if not os.path.exists(fn):
@@ -100,6 +115,31 @@ class SceneDataset(EvalDataset):
             pc=np.loadtxt(self.pc_paths[int(pc_id)],delimiter=',')
             return pc
     
+    def _Minkowski_input(self, pcd: np.ndarray, voxel_size):
+        xyz = pcd[:, :3]
+        feats =  feats = np.ones((len(pcd), 1))
+        # Voxelize xyz and feats
+        coords = np.floor(xyz / voxel_size)
+        coords, inds = ME.utils.sparse_quantize(coords, return_index=True)
+        # Convert to batched coords compatible with ME
+        coords = ME.utils.batched_coordinates([coords])
+        return_coords = xyz[inds]
+
+        feats = feats[inds]
+        feats = torch.tensor(feats, dtype=torch.float32)
+
+        return feats, coords, return_coords
+    
+    def get_ME_pc(self,pc_id,voxel_size):
+        pc = self.get_pc(pc_id)
+        feats, coords, _ = self._Minkowski_input(pc, voxel_size)
+        Minput = ME.SparseTensor(feats, coordinates=coords)
+        return Minput
+    
+    def get_centerized_Minput_coords(self,pc_id, voxel_size):
+        Mx = self.get_ME_pc(pc_id, voxel_size)
+        return Mx.C.numpy()[:,1:] * voxel_size + voxel_size / 2.0
+            
     def get_pc_o3d(self,pc_id):
         return o3d.io.read_point_cloud(self.pc_ply_paths[int(pc_id)])
             

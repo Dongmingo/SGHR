@@ -88,7 +88,11 @@ class cycle_tester():
     
     def construct_LSW(self, dataset):
         # use predicted overlap ratio
-        scoremat = np.load(f'{self.cfg.save_dir}/predict_overlap/{dataset.name}/ratio.npy')
+        scoremat = np.load(f'pre/predict_overlap/{dataset.name}/ratio.npy')
+        if args.use_gt_overlap_graph:
+            scoremat = np.load(f'pre/gt_overlap/{dataset.name}/ratio.npy')
+        if args.use_full_graph:
+            scoremat =  (np.ones_like(scoremat) - np.eye(scoremat.shape[0])).astype(np.float32)
         n,_ = scoremat.shape     
         # keep symmetry
         for i in range(n):
@@ -96,12 +100,32 @@ class cycle_tester():
             for j in range(i+1,n):
                 scoremat[j,i] = scoremat[i,j]
         # conduct top-k mask
-        mask = np.zeros([n,n])
-        for i in range(n):
-            score_scan = scoremat[i]
-            argsort = np.argsort(-score_scan)[:args.topk]
-            mask[i,argsort] = 1
+        if args.use_full_graph:
+            mask = scoremat
+        else:
+            mask = np.zeros([n,n])
+            for i in range(n):
+                score_scan = scoremat[i]
+                argsort = np.argsort(-score_scan)[:args.topk]
+                mask[i,argsort] = 1
         return scoremat, mask.astype(np.float32)
+    
+    def get_gt_overlap(self, dataset):
+        scoremat = np.load(f'pre/predict_overlap/{dataset.name}/ratio.npy')
+        mask = (np.ones_like(scoremat) - np.eye(scoremat.shape[0])).astype(np.float32)        
+        # whether we use the ground truth overlap matrix
+        # pairwise registration
+        n = len(dataset.pc_ids)
+        Ts = np.zeros([n,n,4,4])
+        overlap = np.zeros([n,n])
+        for i in range(n):
+            for j in range(n):
+                if mask[i,j]>0:
+                    if i >= j:continue
+                    if np.sum(np.abs(Ts[i,j,0:3,0:3]))<0.001:                    
+                        overlap[i,j] = self.estimator.cal_gt_coarse_overlap(dataset, i, j)
+                        overlap[j,i] = overlap[i,j]
+        return overlap
     
     def onegraph(self, dataset):
         scoremat, mask = self.construct_LSW(dataset)        
@@ -113,7 +137,7 @@ class cycle_tester():
         weights = np.zeros([n,n])
         N_pair = 0
         for i in range(n):
-            for j in range(n):
+            for j in range(i, n):
                 if mask[i,j]>0:
                     if i == j:continue
                     # in the following, we must construct a symmetric matrix (weights(if add the noise matrix should also be), Ts) 
@@ -122,15 +146,16 @@ class cycle_tester():
                     weights[j,i] = 1    
                     # If we haven't load the trans and the inv trans, we load the pairwise transformation
                     if np.sum(np.abs(Ts[i,j,0:3,0:3]))<0.001:                    
-                        Tij, ir, n_matches = self.estimator.run(dataset, i, j)
-                        # guarantee meaningful rotation matrix
-                        if np.linalg.det(Tij[0:3,0:3])<0:
-                            Tij[0:2] = Tij[[1,0]]
-                        # we use ransac's inlier number/100
-                        irs[i,j], irs[j,i] = ir*n_matches/100, ir*n_matches/100
-                        Ts[i,j] = Tij
-                        Ts[j,i] = np.linalg.inv(Tij)
-                        N_pair += 1
+                        Tij, ir, n_matches = self.estimator.run(dataset, i, j, args.use_gt_coarse_corres, args.use_gt_fine_corres)
+                        if n_matches != 0:
+                            # guarantee meaningful rotation matrix
+                            if np.linalg.det(Tij[0:3,0:3])<0:
+                                Tij[0:2] = Tij[[1,0]]   # permute rotation matrix to 1,0,2
+                            # we use ransac's inlier number/100
+                            irs[i,j], irs[j,i] = ir*n_matches/100, ir*n_matches/100
+                            Ts[i,j] = Tij
+                            Ts[j,i] = np.linalg.inv(Tij)
+                            N_pair += 1
         print(f'Estimate {N_pair} pairs')
         # conduct the global transformation syn
         Tglobals,weights_out = pair2globalT_cycle(weights*scoremat*irs, Ts, args.N_cyclegraph)        
@@ -151,6 +176,18 @@ class cycle_tester():
         self.savelog(dataset, Tpairs)
         return Tpairs
         
+    def save_gt_overlap(self, gt_overlap, dataset, name):
+        savedir = f'pre/gt_overlap/{dataset.name}/{name}'
+        make_non_exists_dir(savedir)
+        np.save(f'{savedir}/ratio.npy', gt_overlap)
+    
+    def run_get_gt_onedatasets(self, datasets):
+        for name, dataset in tqdm(self.datasets.items()):
+            if type(dataset) is str: continue
+            # graph construct and calculate
+            gt_overlap = self.get_gt_overlap(dataset)
+            self.save_gt_overlap(gt_overlap, dataset, name)
+            
     def run_onedatasets(self, datasets):
         Total_N_pair = 0
         RR = []
@@ -207,19 +244,31 @@ class cycle_tester():
             print(f'{datasets[name].name} rr: {rr_one}')
         print(f'RR of {setname} - Avg: ', np.mean(np.array(RR)))
     
+    def run_get_gt(self):
+        self.run_get_gt_onedatasets(self.datasets) 
+        
     def run(self):
         self.run_onedatasets(self.datasets) 
-        if self.datasets['wholesetname'] is '3dmatch':
+        if self.datasets['wholesetname'] == '3dmatch':
             self.run_onedatasets_givengraph(self.datasetsLo)
 
             
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset',         default='3dmatch',  type=str,   help='name of dataset')
+    
+    # Customized parameters
+    parser.add_argument('--calculate_coarse_overlap', action='store_true')
+    parser.add_argument('--use_full_graph', action='store_true')
+    parser.add_argument('--use_gt_overlap_graph', action='store_true')
+    parser.add_argument('--use_gt_coarse_corres', action='store_true')
+    parser.add_argument('--use_gt_fine_corres', action='store_true')
+    
     # for multireg algorithm
     parser.add_argument('--estimator',       default='yoho',    type=str,     help='name of estimator')
     parser.add_argument('--topk',            default=10,        type=int,     help='the top k overlapping scans used for transformation syn')
     parser.add_argument('--N_cyclegraph',    default=50,        type=int,     help='we WLS the graph for 100 iterations')
+    
     # for evaluation
     parser.add_argument('--save_dir',        default='./pre',   type=str,     help='for eval results')
     parser.add_argument('--inlierd',         default=0.07,      type=float,   help='inlier threshold for RANSAC')
@@ -233,4 +282,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     tester = cycle_tester(args)
-    tester.run()
+    if args.calculate_coarse_overlap:
+        tester.run_get_gt()
+    else:
+        tester.run()

@@ -45,6 +45,7 @@ def eigenrs(locws, Rs, N, normalized = False):
     return np.concatenate(Rpre, axis=0)
 
 def leastsquare(locws, ts, pcrs, N):
+    # Predicting translations
     '''
     base :  RiPi+ti = RjPj+tj
             Pi = RijPj+tij
@@ -145,7 +146,7 @@ def pair2globalT_cycle(W_edges, Ts, iters):
     #   locws --> p*[i,j,w] (None zero w)
     #   Rs --> p*[3*3]
     # Output\Tpre:   N*4*4
-    # Output\locs:  pair indexes and pair transformations
+    # Output\locs:   pair indexes and pair transformations
     N = W_edges.shape[0]
     locws = []
     Rs = []
@@ -162,6 +163,7 @@ def pair2globalT_cycle(W_edges, Ts, iters):
     # cycle re-weighting
     Tpre = LaplacianT(locws, Rs, ts, N)
     for i in range(iters):
+        # 50 times reweighting
         locws = error_reweight(i, locws, Ts, Tpre, all_iters = iters)  
         locws = keep_symmetry(locws,N) 
         Tpre = LaplacianT(locws, Rs, ts, N, calt=False)
